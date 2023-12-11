@@ -4,4 +4,5 @@ pub fn setup(app: &mut App) {
     embedded_asset!(app, "src/", "plus.png");
     embedded_asset!(app, "src/", "dot.png");
     embedded_asset!(app, "src/", "cross.png");
+    embedded_asset!(app, "src/", "arrow.png");
 }

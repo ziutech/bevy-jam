@@ -12,6 +12,8 @@ use bevy_jam_4::line_marker::{LineMarker, LineMaterial};
 // TODO: title screen
 // TODO: level progress bar
 
+// TODO: vec2.rounded() = dot product between normalized vec and the axis?
+
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, MaterialPlugin::<LineMaterial>::default()))
@@ -40,6 +42,7 @@ fn main() {
                 show_new_level,
                 hide_new_level,
                 button_border_highlight,
+                choose_part_action,
             ),
         )
         .add_systems(PostUpdate, update_level_ui)
@@ -738,6 +741,9 @@ struct PartSprites {
     plus: Handle<Image>,
     dot: Handle<Image>,
     cross: Handle<Image>,
+    arrow_right: Handle<Image>,
+    arrow_up: Handle<Image>,
+    arrow_up_right: Handle<Image>,
 }
 
 impl PartSprites {
@@ -746,6 +752,20 @@ impl PartSprites {
             PartType::Base => self.plus.clone_weak(),
             PartType::Gun(_) => self.dot.clone_weak(),
             PartType::None | PartType::Connector | PartType::Shield => Handle::default(),
+        }
+    }
+
+    fn for_action(&self, action: PartAction) -> Handle<Image> {
+        match action {
+            PartAction::Delete => self.cross.clone_weak(),
+            PartAction::Shield => Handle::default(),
+            PartAction::Base => self.plus.clone_weak(),
+            PartAction::Gun => self.dot.clone_weak(),
+            PartAction::GunDirection {
+                gun_position: _,
+                gun_part: _,
+                direction: _,
+            } => Handle::default(),
         }
     }
 }
@@ -767,6 +787,9 @@ fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
         plus: asset_server.load::<Image>("sprites/plus.png"),
         dot: asset_server.load::<Image>("sprites/dot.png"),
         cross: asset_server.load::<Image>("sprites/cross.png"),
+        arrow_right: asset_server.load::<Image>("sprites/arrow_right.png"),
+        arrow_up: asset_server.load::<Image>("sprites/arrow_up.png"),
+        arrow_up_right: asset_server.load::<Image>("sprites/arrow_up_right.png"),
     });
 
     commands.spawn(Camera2dBundle::default());
@@ -911,7 +934,10 @@ fn setup_ui(mut commands: Commands, part_sprites: Res<PartSprites>) {
                                         border_color: Color::rgb(0.25, 0.25, 0.25).into(),
                                         ..Default::default()
                                     },
-                                    ShipUi { part_count: 2 },
+                                    ShipUi {
+                                        part_count: 2,
+                                        current_action: PartAction::Delete,
+                                    },
                                 ));
                         });
 
@@ -997,12 +1023,31 @@ fn setup_ui(mut commands: Commands, part_sprites: Res<PartSprites>) {
         });
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy)]
 enum PartAction {
     Delete,
     Shield,
     Base,
     Gun,
+    GunDirection {
+        gun_position: IVec2,
+        gun_part: Entity,
+        direction: Option<Vec2>,
+    },
+}
+impl PartAction {
+    fn color(&self) -> Color {
+        match self {
+            PartAction::Shield | PartAction::Base | PartAction::Gun | PartAction::Delete => {
+                PartType::None.color()
+            }
+            PartAction::GunDirection {
+                gun_position: _,
+                gun_part: _,
+                direction: _,
+            } => Color::YELLOW,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -1033,6 +1078,7 @@ struct ShipPartUi {
 #[derive(Component)]
 struct ShipUi {
     part_count: usize,
+    current_action: PartAction,
 }
 
 const NORMAL_BUTTON: Color = Color::rgb(0.16796875, 0.171875, 0.18359375);
@@ -1040,11 +1086,16 @@ const HOVERED_BUTTON: Color = Color::BLACK;
 const PRESSED_BUTTON: Color = Color::rgb(0.35, 0.75, 0.35);
 
 fn button_border_highlight(
+    paused: Res<PauseState>,
     mut interaction_query: Query<
         (&Interaction, &BackgroundColor, &mut BorderColor),
         (Changed<Interaction>, With<Button>),
     >,
 ) {
+    if !paused.0 {
+        return;
+    }
+
     for (interaction, background, mut button_border) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
@@ -1056,6 +1107,29 @@ fn button_border_highlight(
             Interaction::None => {
                 *button_border = background.0.into();
             }
+        }
+    }
+}
+
+fn choose_part_action(
+    paused: Res<PauseState>,
+
+    mut ship_ui: Query<&mut ShipUi>,
+
+    interaction_query: Query<(&Interaction, &PartAction), (Changed<Interaction>, With<Button>)>,
+) {
+    if !paused.0 {
+        return;
+    }
+
+    let mut ship_ui = ship_ui.single_mut();
+
+    for (interaction, part_action) in interaction_query.iter() {
+        match interaction {
+            Interaction::Pressed => {
+                ship_ui.current_action = *part_action;
+            }
+            _ => {}
         }
     }
 }
@@ -1073,34 +1147,70 @@ fn ship_ui_manager(
         (Changed<Interaction>, With<Button>, Without<ShipPart>),
     >,
 
-    mut ship_ui_state: Query<&mut ShipUi>,
+    mut ship_ui: Query<&mut ShipUi>,
 
-    mut ship_parts: Query<
-        (&mut Sprite, &mut Handle<Image>, &mut Visibility, &ShipPart),
-        Without<Button>,
+    mut ship_parts_visual: Query<
+        (&mut Sprite, &mut Handle<Image>, &mut Visibility),
+        (Without<Button>, With<ShipPart>),
     >,
+
+    mut ship_part: Query<&mut ShipPart>,
+    mut commands: Commands,
+
     part_sprites: Res<PartSprites>,
 ) {
     if !paused.0 {
         return;
     }
 
+    let mut ship_ui = ship_ui.single_mut();
+
     for (interaction, mut button_color, mut button_image, mut ship_part_ui) in
         &mut interaction_query
     {
-        let (mut sprite, mut texture, mut visibility, part) = ship_parts
+        let (mut sprite, mut texture, mut visibility) = ship_parts_visual
             .get_mut(ship_part_ui.ship_part)
             .expect("ship part missing");
-        info!(?part);
+
+        let part = ship_part
+            .get(ship_part_ui.ship_part)
+            .expect("missing ship part");
         match *interaction {
             Interaction::Pressed => {
-                let next_part = match ship_part_ui.part_type {
-                    PartType::None => PartType::Base,
-                    PartType::Base => PartType::Shield,
-                    PartType::Shield => PartType::Connector,
-                    PartType::Connector => PartType::None,
-                    PartType::Gun(_) => PartType::None,
+                // always remove the gun bundle
+                commands
+                    .entity(ship_part_ui.ship_part)
+                    .remove::<GunBundle>();
+
+                let (next_part, next_action) = match ship_ui.current_action {
+                    a @ PartAction::Delete => (PartType::None, a),
+                    a @ PartAction::Base => (PartType::Base, a),
+                    a @ PartAction::Shield => (PartType::Shield, a),
+                    PartAction::Gun => (
+                        PartType::Gun(Vec2::default()),
+                        PartAction::GunDirection {
+                            gun_position: part.grid_pos,
+                            gun_part: ship_part_ui.ship_part,
+                            direction: None,
+                        },
+                    ),
+                    PartAction::GunDirection {
+                        gun_position,
+                        gun_part,
+                        direction: _,
+                    } => {
+                        let gun_direction = part.grid_pos - gun_position;
+                        commands.entity(gun_part).insert(GunBundle {
+                            gun: Gun {
+                                direction: gun_direction.as_vec2().normalize().round().extend(0.),
+                                bullet_speed: 2.,
+                            },
+                            ..Default::default()
+                        });
+                        (PartType::None, PartAction::Gun)
+                    }
                 };
+                ship_ui.current_action = next_action;
 
                 ship_part_ui.part_type = next_part;
                 info!(?ship_part_ui.part_type);
@@ -1119,7 +1229,45 @@ fn ship_ui_manager(
                 sprite.color = new_color;
                 *button_color = new_color.into();
             }
-            _ => {}
+            Interaction::Hovered => {
+                let image = if let PartAction::GunDirection {
+                    gun_position,
+                    gun_part: _,
+                    direction: _,
+                } = ship_ui.current_action
+                {
+                    if ship_part_ui.part_type != PartType::None {
+                        part_sprites.for_part(ship_part_ui.part_type).into()
+                    } else {
+                        let direction =
+                            (part.grid_pos - gun_position).as_vec2().normalize().round();
+
+                        let up = &part_sprites.arrow_up;
+                        let right = &part_sprites.arrow_right;
+                        let up_right = &part_sprites.arrow_up_right;
+                        match direction.to_array().map(|x| x as i32) {
+                            //x y
+                            [0, 1] => UiImage::from(up.clone_weak()),
+                            [0, -1] => UiImage::from(up.clone_weak()).with_flip_y(),
+                            [1, 0] => UiImage::from(right.clone_weak()),
+                            [-1, 0] => UiImage::from(right.clone_weak()).with_flip_x(),
+
+                            [1, 1] => UiImage::from(up_right.clone_weak()),
+                            [1, -1] => UiImage::from(up_right.clone_weak()).with_flip_y(),
+                            [-1, 1] => UiImage::from(up_right.clone_weak()).with_flip_x(),
+                            [-1, -1] => UiImage::from(up_right.clone()).with_flip_y().with_flip_x(),
+
+                            _ => UiImage::default(),
+                        }
+                    }
+                } else {
+                    part_sprites.for_action(ship_ui.current_action).into()
+                };
+                *button_image = image;
+            }
+            Interaction::None => {
+                *button_image = part_sprites.for_part(ship_part_ui.part_type).into();
+            }
         }
     }
 }
