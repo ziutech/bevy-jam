@@ -10,6 +10,8 @@ use bevy::{
 
 // TODO: vec2.rounded() = dot product between normalized vec and the axis?
 
+mod sprites;
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
