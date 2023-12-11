@@ -39,6 +39,7 @@ fn main() {
                 pause,
                 show_new_level,
                 hide_new_level,
+                button_border_highlight,
             ),
         )
         .add_systems(PostUpdate, update_level_ui)
@@ -954,22 +955,22 @@ fn setup_ui(mut commands: Commands, part_sprites: Res<PartSprites>) {
                             ));
                             let parts = vec![
                                 (
-                                    PartButton::Delete,
+                                    PartAction::Delete,
                                     PartType::None.color(),
                                     part_sprites.cross.clone_weak(),
                                 ),
                                 (
-                                    PartButton::Shield,
+                                    PartAction::Shield,
                                     PartType::Shield.color(),
                                     Handle::default(),
                                 ),
                                 (
-                                    PartButton::Base,
+                                    PartAction::Base,
                                     PartType::Base.color(),
                                     part_sprites.plus.clone_weak(),
                                 ),
                                 (
-                                    PartButton::Gun,
+                                    PartAction::Gun,
                                     PartType::Gun(Vec2::default()).color(),
                                     part_sprites.dot.clone_weak(),
                                 ),
@@ -997,7 +998,7 @@ fn setup_ui(mut commands: Commands, part_sprites: Res<PartSprites>) {
 }
 
 #[derive(Component)]
-enum PartButton {
+enum PartAction {
     Delete,
     Shield,
     Base,
@@ -1035,8 +1036,29 @@ struct ShipUi {
 }
 
 const NORMAL_BUTTON: Color = Color::rgb(0.16796875, 0.171875, 0.18359375);
-const HOVERED_BUTTON: Color = Color::rgb(0.25, 0.25, 0.25);
+const HOVERED_BUTTON: Color = Color::BLACK;
 const PRESSED_BUTTON: Color = Color::rgb(0.35, 0.75, 0.35);
+
+fn button_border_highlight(
+    mut interaction_query: Query<
+        (&Interaction, &BackgroundColor, &mut BorderColor),
+        (Changed<Interaction>, With<Button>),
+    >,
+) {
+    for (interaction, background, mut button_border) in &mut interaction_query {
+        match *interaction {
+            Interaction::Pressed => {
+                *button_border = PRESSED_BUTTON.into();
+            }
+            Interaction::Hovered => {
+                *button_border = HOVERED_BUTTON.into();
+            }
+            Interaction::None => {
+                *button_border = background.0.into();
+            }
+        }
+    }
+}
 
 fn ship_ui_manager(
     paused: Res<PauseState>,
@@ -1045,7 +1067,6 @@ fn ship_ui_manager(
         (
             &Interaction,
             &mut BackgroundColor,
-            &mut BorderColor,
             &mut UiImage,
             &mut ShipPartUi,
         ),
@@ -1064,7 +1085,7 @@ fn ship_ui_manager(
         return;
     }
 
-    for (interaction, mut button_color, mut button_border, mut button_image, mut ship_part_ui) in
+    for (interaction, mut button_color, mut button_image, mut ship_part_ui) in
         &mut interaction_query
     {
         let (mut sprite, mut texture, mut visibility, part) = ship_parts
@@ -1097,14 +1118,8 @@ fn ship_ui_manager(
 
                 sprite.color = new_color;
                 *button_color = new_color.into();
-                *button_border = PRESSED_BUTTON.into();
             }
-            Interaction::Hovered => {
-                *button_border = HOVERED_BUTTON.into();
-            }
-            Interaction::None => {
-                *button_border = button_color.0.into();
-            }
+            _ => {}
         }
     }
 }
