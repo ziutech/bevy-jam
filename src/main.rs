@@ -1,10 +1,6 @@
 use bevy::{
-    ecs::event::event_update_system,
-    prelude::*,
-    sprite::{collide_aabb::collide, MaterialMesh2dBundle},
-    ui::FocusPolicy,
+    ecs::event::event_update_system, prelude::*, sprite::collide_aabb::collide, ui::FocusPolicy,
 };
-use bevy_jam_4::line_marker::{LineMarker, LineMaterial};
 
 // TODO: destroy whole enemy and ship if base is destroyed
 // TODO: enenmy types
@@ -16,7 +12,12 @@ use bevy_jam_4::line_marker::{LineMarker, LineMaterial};
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, MaterialPlugin::<LineMaterial>::default()))
+        .add_plugins(DefaultPlugins)
+        .init_resource::<EnemyStore>()
+        .insert_resource(EnemySpawnTimer(Timer::from_seconds(
+            2.,
+            TimerMode::Repeating,
+        )))
         .insert_resource(PauseState(false))
         .insert_resource(GunTick(Timer::from_seconds(0.4, TimerMode::Repeating)))
         .add_event::<NewLevel>()
@@ -24,7 +25,7 @@ fn main() {
         .insert_resource(LevelTick(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(Health(20))
         .add_systems(PreStartup, (setup, apply_deferred, setup_ui).chain())
-        .add_systems(Startup, (Ship::create, Enemy::setup))
+        .add_systems(Startup, Ship::create)
         .add_systems(Update, event_update_system::<NewLevel>)
         .add_systems(PreUpdate, ship_ui_manager)
         .add_systems(
@@ -43,6 +44,7 @@ fn main() {
                 hide_new_level,
                 button_border_highlight,
                 choose_part_action,
+                enemy_spawner,
             ),
         )
         .add_systems(PostUpdate, update_level_ui)
@@ -455,7 +457,7 @@ impl Level {
         if !timer.0.tick(time.delta()).just_finished() {
             return;
         }
-        level.single_mut().add_with_event(&mut event, 0.05);
+        level.single_mut().add_with_event(&mut event, 0.01);
     }
 }
 
@@ -540,7 +542,7 @@ fn kill_enemies(
             ) {
                 if !is_bullet {
                     for mut level in level.iter_mut() {
-                        level.add_with_event(&mut event, 0.25);
+                        level.add_with_event(&mut event, 0.1);
                     }
                 }
                 commands.entity(enemy_id).despawn();
@@ -557,100 +559,6 @@ struct Enemy {}
 struct EnemyBundle {
     enemy: Enemy,
     body: Box,
-}
-
-impl Enemy {
-    fn setup(
-        mut commands: Commands,
-        mut meshes: ResMut<Assets<Mesh>>,
-        mut materials: ResMut<Assets<LineMaterial>>,
-    ) {
-        let direction = Vec3::new(0., -1., 0.);
-        let position = Vec3::X * GridPosition::SIZE * 20. + Vec3::Y * GridPosition::SIZE * 5.;
-        commands.spawn(MaterialMesh2dBundle {
-            mesh: meshes
-                .add(Mesh::from(LineMarker {
-                    start: Vec3::ZERO,
-                    end: Vec3::new(3., 0., 0.),
-                }))
-                .into(),
-            transform: Transform::from_xyz(0.5, 0.0, 0.0),
-            material: materials.add(LineMaterial { color: Color::BLUE }),
-            ..default()
-        });
-        commands
-            .spawn((
-                Seeker {
-                    velocity: direction,
-                    prediction_mult: 1,
-                },
-                MaterialMeshBundle {
-                    mesh: meshes.add(Mesh::from(LineMarker {
-                        start: Vec3::ZERO,
-                        end: direction * GridPosition::SIZE * 2.,
-                    })),
-                    material: materials.add(LineMaterial { color: Color::BLUE }),
-                    transform: Transform::from_translation(position),
-                    ..Default::default()
-                },
-            ))
-            .with_children(|parent| {
-                parent.spawn((
-                    Enemy {},
-                    Gun {
-                        direction,
-                        bullet_speed: 1.,
-                    },
-                    AnimationPlayer::default(),
-                    Name::new("gun"),
-                    Box::from_grid(0., -1.).color(Color::BLUE),
-                ));
-                parent.spawn((Enemy {}, Box::from_grid(0., 0.)));
-            });
-
-        let direction = Vec3::new(0., -1., 0.);
-        let position = Vec3::X * GridPosition::SIZE * -10. + Vec3::Y * GridPosition::SIZE * -30.;
-        commands.spawn(MaterialMesh2dBundle {
-            mesh: meshes
-                .add(Mesh::from(LineMarker {
-                    start: Vec3::ZERO,
-                    end: Vec3::new(3., 0., 0.),
-                }))
-                .into(),
-            transform: Transform::from_xyz(0.5, 0.0, 0.0),
-            material: materials.add(LineMaterial { color: Color::BLUE }),
-            ..default()
-        });
-        commands
-            .spawn((
-                Seeker {
-                    velocity: direction,
-                    prediction_mult: 1,
-                },
-                MaterialMeshBundle {
-                    mesh: meshes.add(Mesh::from(LineMarker {
-                        start: Vec3::ZERO,
-                        end: direction * GridPosition::SIZE * 2.,
-                    })),
-                    material: materials.add(LineMaterial { color: Color::BLUE }),
-                    transform: Transform::from_translation(position),
-                    ..Default::default()
-                },
-            ))
-            .with_children(|parent| {
-                parent.spawn((
-                    Enemy {},
-                    Gun {
-                        direction,
-                        bullet_speed: 2.,
-                    },
-                    AnimationPlayer::default(),
-                    Name::new("gun"),
-                    Box::from_grid(0., -1.).color(Color::BLUE),
-                ));
-                parent.spawn((Enemy {}, Box::from_grid(0., 0.)));
-            });
-    }
 }
 
 #[derive(Component)]
@@ -684,7 +592,7 @@ fn move_seekers(
         let direction = seeker.velocity;
 
         // why this has a minus? who knows!
-        transform.translation -= direction * time.delta_seconds() * 20.;
+        transform.translation -= direction * time.delta_seconds() * 100.;
 
         let forward_enemy = (transform.rotation * Vec3::Y).xy();
 
@@ -731,6 +639,132 @@ fn move_seekers(
             }
         }
     }
+}
+
+#[derive(Resource)]
+struct EnemyStore {
+    enemies: Vec<EnemyRepresenation>,
+}
+
+impl EnemyStore {
+    fn random_enemy(&self) -> &EnemyRepresenation {
+        use rand::seq::SliceRandom;
+        self.enemies
+            .choose(&mut rand::thread_rng())
+            .expect("at least one enemy should be present in enemy representation")
+    }
+}
+
+impl Default for EnemyStore {
+    fn default() -> Self {
+        let seeker = EnemyRepresenation {
+            parts: vec![
+                EnemyPart {
+                    part_type: PartType::Gun(Vec2::new(0., -1.)),
+                    position: Vec2::new(0., -1.),
+                },
+                EnemyPart {
+                    part_type: PartType::Shield,
+                    position: Vec2::new(0., 0.),
+                },
+            ],
+            enemy_type: EnemyType::Seeker,
+        };
+
+        Self {
+            enemies: vec![seeker],
+        }
+    }
+}
+
+struct EnemyRepresenation {
+    parts: Vec<EnemyPart>,
+    enemy_type: EnemyType,
+}
+
+#[derive(Debug)]
+struct EnemyPart {
+    part_type: PartType,
+    position: Vec2,
+}
+
+enum EnemyType {
+    Seeker,
+    Shooter,
+}
+
+#[derive(Resource)]
+struct EnemySpawnTimer(Timer);
+
+fn random_position(a: f32, b: f32) -> Vec2 {
+    use rand::thread_rng;
+
+    let mut x = rand::Rng::gen::<f32>(&mut thread_rng()) * (2. * a + 2. * b);
+    if x < a {
+        return Vec2::new(x, 0.);
+    }
+    x -= a;
+    if x < b {
+        return Vec2::new(a, x);
+    }
+    x -= b;
+    if x < a {
+        return Vec2::new(x, b);
+    } else {
+        return Vec2::new(0., x - a);
+    }
+}
+
+fn enemy_spawner(
+    paused: Res<PauseState>,
+
+    mut commands: Commands,
+    time: Res<Time>,
+    window: Query<&Window>,
+
+    mut timer: ResMut<EnemySpawnTimer>,
+    enemy_store: Res<EnemyStore>,
+) {
+    if paused.0 {
+        return;
+    }
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
+    let enemy = enemy_store.random_enemy();
+
+    let window = window.single();
+
+    let position = random_position(window.width(), window.height()).extend(0.);
+
+    let mut root = match enemy.enemy_type {
+        EnemyType::Seeker => commands.spawn((
+            Seeker {
+                velocity: Vec3::X,
+                prediction_mult: 1,
+            },
+            SpatialBundle {
+                transform: Transform::from_translation(position),
+                ..Default::default()
+            },
+        )),
+        EnemyType::Shooter => todo!(),
+    };
+    root.with_children(|root| {
+        for part in enemy.parts.iter() {
+            let mut spawned =
+                root.spawn((Enemy {}, Box::from_grid(part.position.x, part.position.y)));
+            if let PartType::Gun(direction) = part.part_type {
+                spawned.insert(GunBundle {
+                    gun: Gun {
+                        direction: direction.extend(0.),
+                        bullet_speed: 5.,
+                    },
+                    ..Default::default()
+                });
+            }
+        }
+    });
 }
 
 #[derive(Component)]
