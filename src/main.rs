@@ -241,56 +241,12 @@ impl PartType {
     fn color(&self) -> Color {
         match self {
             PartType::None => NORMAL_BUTTON,
-            PartType::Base => Color::rgb(0.15, 0.15, 0.15),
-            PartType::Shield => Color::rgb(0.25, 0.25, 0.25),
+            PartType::Base | PartType::Shield => Color::rgb(0.25, 0.25, 0.25),
             PartType::Connector => Color::rgb(0.45, 0.45, 0.45),
             PartType::Gun(_) => Color::rgb(0.35, 0.35, 0.35),
         }
     }
 }
-
-// fn reattach_ship_parts(
-//     mut commands: Commands,
-//     ship_layout_query: Query<(, Entity), (Changed<ShipLayout>, With<Ship>)>,
-// ) {
-//     let (ship_layout, ship) = ship_layout_query.single();
-//     // let mut ship = commands.entity(ship);
-//     // ship.clear_children();
-//
-//     // ship.with_children(|parent| {
-//     for x in 0..Ship::MAX_WIDTH {
-//         for y in 0..Ship::MAX_HEIGHT {
-//             let part = ship_layout.0.get(x, y);
-//             let offset_from_base = Vec2 {
-//                 x: (x as i8 - Ship::MAX_WIDTH as i8) as f32,
-//                 y: (y as i8 - Ship::MAX_HEIGHT as i8) as f32,
-//             };
-//
-//             match part {
-//                 PartType::None => {}
-//                 PartType::Shield | PartType::Base => {
-//                     commands.spawn((
-//                         ShipPart {},
-//                         Box::from_grid(offset_from_base.x, offset_from_base.y),
-//                     ));
-//                 }
-//                 PartType::Gun(direction) => {
-//                     commands.spawn((
-//                         ShipPart {},
-//                         Gun {
-//                             direction,
-//                             bullet_speed: 1.,
-//                         },
-//                         AnimationPlayer::default(),
-//                         Name::new("gun"),
-//                         Box::from_grid(offset_from_base.x, offset_from_base.y),
-//                     ));
-//                 }
-//             }
-//         }
-//     }
-//     // });
-// }
 
 #[derive(Component)]
 struct Ship {
@@ -821,7 +777,7 @@ fn health_bar_update(health: Res<Health>, mut query: Query<&mut Text, With<Playe
     }
 }
 
-fn setup_ui(mut commands: Commands) {
+fn setup_ui(mut commands: Commands, part_sprites: Res<PartSprites>) {
     use Val::*;
     commands.spawn((
         TextBundle {
@@ -963,13 +919,11 @@ fn setup_ui(mut commands: Commands) {
                         .spawn(NodeBundle {
                             // background_color: Color::BLUE.into(),
                             style: Style {
-                                display: Display::Grid,
-                                grid_template_columns: vec![
-                                    RepeatedGridTrack::px(5, GridPosition::SIZE),
-                                    RepeatedGridTrack::px(1, GridPosition::SIZE),
-                                ],
-
+                                display: Display::Flex,
+                                flex_direction: FlexDirection::Row,
+                                justify_content: JustifyContent::SpaceAround,
                                 border: UiRect::top(Px(GridPosition::SIZE)),
+                                align_items: AlignItems::Center,
                                 ..Default::default()
                             },
                             border_color: Color::rgb(0.25, 0.25, 0.25).into(),
@@ -980,7 +934,6 @@ fn setup_ui(mut commands: Commands) {
                                 TextBundle {
                                     style: Style {
                                         border: UiRect::left(Px(GridPosition::SIZE)),
-                                        grid_column: GridPlacement::span(3),
                                         ..Default::default()
                                     },
                                     text: Text {
@@ -997,23 +950,58 @@ fn setup_ui(mut commands: Commands) {
                                     focus_policy: FocusPolicy::Block,
                                     ..Default::default()
                                 },
-                                BorderColor(Color::rgb(0.25, 0.25, 0.25)),
                                 LevelUi {},
                             ));
-                            parent
-                                .spawn(NodeBundle {
-                                    style: Style {
-                                        display: Display::Flex,
-                                        border: UiRect::left(Px(GridPosition::SIZE)),
+                            let parts = vec![
+                                (
+                                    PartButton::Delete,
+                                    PartType::None.color(),
+                                    part_sprites.cross.clone_weak(),
+                                ),
+                                (
+                                    PartButton::Shield,
+                                    PartType::Shield.color(),
+                                    Handle::default(),
+                                ),
+                                (
+                                    PartButton::Base,
+                                    PartType::Base.color(),
+                                    part_sprites.plus.clone_weak(),
+                                ),
+                                (
+                                    PartButton::Gun,
+                                    PartType::Gun(Vec2::default()).color(),
+                                    part_sprites.dot.clone_weak(),
+                                ),
+                            ];
+                            for (button, color, sprite) in parts.into_iter() {
+                                parent.spawn((
+                                    ButtonBundle {
+                                        style: Style {
+                                            border: UiRect::all(Px(2.)),
+                                            width: Px(GridPosition::SIZE * 2.),
+                                            height: Px(GridPosition::SIZE * 2.),
+                                            ..Default::default()
+                                        },
+                                        image: sprite.into(),
+                                        background_color: color.into(),
+                                        border_color: color.into(),
                                         ..Default::default()
                                     },
-                                    border_color: Color::rgb(0.25, 0.25, 0.25).into(),
-                                    ..Default::default()
-                                })
-                                .with_children(|parts| {});
+                                    button,
+                                ));
+                            }
                         });
                 });
         });
+}
+
+#[derive(Component)]
+enum PartButton {
+    Delete,
+    Shield,
+    Base,
+    Gun,
 }
 
 #[derive(Component)]
