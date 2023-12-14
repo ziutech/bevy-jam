@@ -1,6 +1,4 @@
-use bevy::{
-    ecs::event::event_update_system, prelude::*, sprite::collide_aabb::collide, ui::FocusPolicy,
-};
+use bevy::{prelude::*, sprite::collide_aabb::collide, ui::FocusPolicy};
 
 // TODO: destroy whole enemy and ship if base is destroyed
 // TODO: enenmy types
@@ -12,24 +10,30 @@ use bevy::{
 
 mod sprites;
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, States)]
+enum GameState {
+    InGame,
+    #[default]
+    Paused,
+    LevelUp,
+    GameOver,
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_state::<GameState>()
+        .add_event::<NewLevel>()
         .init_resource::<EnemyStore>()
         .insert_resource(EnemySpawnTimer(Timer::from_seconds(
             2.,
             TimerMode::Repeating,
         )))
-        .insert_resource(PauseState(false))
         .insert_resource(GunTick(Timer::from_seconds(0.4, TimerMode::Repeating)))
-        .add_event::<NewLevel>()
-        .add_event::<Unpaused>()
         .insert_resource(LevelTick(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(Health(20))
         .add_systems(PreStartup, (setup, apply_deferred, setup_ui).chain())
         .add_systems(Startup, Ship::create)
-        .add_systems(Update, event_update_system::<NewLevel>)
-        .add_systems(PreUpdate, ship_ui_manager)
         .add_systems(
             Update,
             (
@@ -41,51 +45,41 @@ fn main() {
                 move_seekers,
                 take_damage,
                 kill_enemies,
-                pause,
-                show_new_level,
-                hide_new_level,
-                button_border_highlight,
-                choose_part_action,
                 enemy_spawner,
-            ),
+            )
+                .run_if(in_state(GameState::InGame)),
         )
+        .add_systems(OnEnter(GameState::LevelUp), show_new_level)
+        .add_systems(
+            Update,
+            (ship_ui_manager, button_border_highlight, choose_part_action)
+                .run_if(in_state(GameState::LevelUp).or_else(in_state(GameState::Paused))),
+        )
+        .add_systems(OnExit(GameState::LevelUp), hide_new_level)
+        .add_systems(PostUpdate, pause)
+        .add_systems(PostUpdate, new_level.run_if(on_event::<NewLevel>()))
         .add_systems(PostUpdate, update_level_ui)
         .run();
 }
 
-#[derive(Event)]
-struct Unpaused;
-
-#[derive(Resource)]
-struct PauseState(bool);
-
 fn pause(
-    mut paused: ResMut<PauseState>,
+    state: Res<State<GameState>>,
+    mut nextstate: ResMut<NextState<GameState>>,
     input: Res<Input<KeyCode>>,
-    mut events: EventWriter<Unpaused>,
 ) {
     if input.just_pressed(KeyCode::Space) {
-        if paused.0 {
-            paused.0 = false;
-            events.send(Unpaused);
-        } else {
-            paused.0 = true;
+        match state.get() {
+            GameState::InGame => nextstate.set(GameState::Paused),
+            GameState::Paused | GameState::LevelUp => nextstate.set(GameState::InGame),
+            GameState::GameOver => {}
         }
     }
 }
 
 fn show_new_level(
-    mut events: EventReader<NewLevel>,
     mut new_level_popup: Query<&mut Visibility, With<NewLevelPopup>>,
     mut ui_background_color: Query<&mut BackgroundColor, With<ShipUi>>,
-    mut paused: ResMut<PauseState>,
 ) {
-    if events.is_empty() {
-        return;
-    }
-
-    events.clear();
-    paused.0 = true;
     for mut visibility in new_level_popup.iter_mut() {
         *visibility = Visibility::Visible;
     }
@@ -95,15 +89,9 @@ fn show_new_level(
 }
 
 fn hide_new_level(
-    mut events: EventReader<Unpaused>,
     mut new_level_popup: Query<&mut Visibility, With<NewLevelPopup>>,
     mut ui_background_color: Query<&mut BackgroundColor, With<ShipUi>>,
 ) {
-    if events.is_empty() {
-        return;
-    }
-
-    events.clear();
     for mut visibility in new_level_popup.iter_mut() {
         *visibility = Visibility::Hidden;
     }
@@ -125,13 +113,8 @@ impl Gun {
         mut gun_timer: ResMut<GunTick>,
         animation: Res<GunAnimation>,
 
-        paused: Res<PauseState>,
-
         mut query: Query<(&GlobalTransform, &mut AnimationPlayer, &Gun, Option<&Enemy>)>,
     ) {
-        if paused.0 {
-            return;
-        }
         if !gun_timer.0.tick(time.delta()).just_finished() {
             return;
         }
@@ -364,16 +347,11 @@ impl Ship {
     fn r#move(
         time: Res<Time>,
         key: Res<Input<KeyCode>>,
-        paused: Res<PauseState>,
         mut gizmos: Gizmos,
 
         mut query: Query<(&mut Transform, &mut Ship)>,
         mut guns: Query<&mut Gun, With<ShipPart>>,
     ) {
-        if paused.0 {
-            return;
-        }
-
         let (mut transform, mut ship) = query.single_mut();
         let mut dir = Vec2::new(0., 0.);
         if key.pressed(KeyCode::W) {
@@ -448,14 +426,10 @@ impl Level {
 
     fn constant_increase(
         time: Res<Time>,
-        paused: Res<PauseState>,
         mut event: EventWriter<NewLevel>,
         mut timer: ResMut<LevelTick>,
         mut level: Query<&mut Level>,
     ) {
-        if paused.0 {
-            return;
-        }
         if !timer.0.tick(time.delta()).just_finished() {
             return;
         }
@@ -471,11 +445,16 @@ struct ShipPart {
     grid_pos: IVec2,
 }
 
-/// Pan Bóg kule nosi
-fn mr_god(paused: Res<PauseState>, mut bullets: Query<(&Bullet, &mut Transform)>) {
-    if paused.0 {
+fn new_level(mut nextstate: ResMut<NextState<GameState>>, mut events: EventReader<NewLevel>) {
+    if events.is_empty() {
         return;
     }
+    events.clear();
+    nextstate.set(GameState::LevelUp);
+}
+
+/// Pan Bóg kule nosi
+fn mr_god(mut bullets: Query<(&Bullet, &mut Transform)>) {
     for (bullet, mut transform) in bullets.iter_mut() {
         transform.translation.x += bullet.direction.x * bullet.speed;
         transform.translation.y += bullet.direction.y * bullet.speed;
@@ -485,6 +464,7 @@ fn mr_god(paused: Res<PauseState>, mut bullets: Query<(&Bullet, &mut Transform)>
 fn take_damage(
     mut commands: Commands,
     mut health: ResMut<Health>,
+    mut nextstate: ResMut<NextState<GameState>>,
     enemies: Query<(Entity, Option<&mut Parent>, &Enemy, &GlobalTransform)>, // TODO: move unused to With<T>
     players: Query<(Entity, &ShipPart, &Visibility, &GlobalTransform)>,
 ) {
@@ -520,6 +500,7 @@ fn take_damage(
         for (id, _, _, _) in players.iter() {
             commands.entity(id).despawn();
         }
+        nextstate.set(GameState::GameOver);
     }
 }
 
@@ -571,15 +552,10 @@ struct Seeker {
 
 fn move_seekers(
     time: Res<Time>,
-    paused: Res<PauseState>,
     ship: Query<(&Transform, &Ship)>,
     mut seekers: Query<(&mut Transform, &mut Seeker, &Children), Without<Ship>>,
     mut guns: Query<&mut Gun>,
 ) {
-    if paused.0 {
-        return;
-    }
-
     let ship = ship.single();
     let predicted_velocity = ship.0.translation - ship.1.previous_position;
     for (mut transform, mut seeker, children) in seekers.iter_mut() {
@@ -718,8 +694,6 @@ fn random_position(a: f32, b: f32) -> Vec2 {
 }
 
 fn enemy_spawner(
-    paused: Res<PauseState>,
-
     mut commands: Commands,
     time: Res<Time>,
     window: Query<&Window>,
@@ -727,9 +701,6 @@ fn enemy_spawner(
     mut timer: ResMut<EnemySpawnTimer>,
     enemy_store: Res<EnemyStore>,
 ) {
-    if paused.0 {
-        return;
-    }
     if !timer.0.tick(time.delta()).just_finished() {
         return;
     }
@@ -1122,16 +1093,11 @@ const HOVERED_BUTTON: Color = Color::BLACK;
 const PRESSED_BUTTON: Color = Color::rgb(0.35, 0.75, 0.35);
 
 fn button_border_highlight(
-    paused: Res<PauseState>,
     mut interaction_query: Query<
         (&Interaction, &BackgroundColor, &mut BorderColor),
         (Changed<Interaction>, With<Button>),
     >,
 ) {
-    if !paused.0 {
-        return;
-    }
-
     for (interaction, background, mut button_border) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
@@ -1148,16 +1114,10 @@ fn button_border_highlight(
 }
 
 fn choose_part_action(
-    paused: Res<PauseState>,
-
     mut ship_ui: Query<&mut ShipUi>,
 
     interaction_query: Query<(&Interaction, &PartAction), (Changed<Interaction>, With<Button>)>,
 ) {
-    if !paused.0 {
-        return;
-    }
-
     let mut ship_ui = ship_ui.single_mut();
 
     for (interaction, part_action) in interaction_query.iter() {
@@ -1171,8 +1131,6 @@ fn choose_part_action(
 }
 
 fn ship_ui_manager(
-    paused: Res<PauseState>,
-
     mut interaction_query: Query<
         (
             &Interaction,
@@ -1195,10 +1153,6 @@ fn ship_ui_manager(
 
     part_sprites: Res<PartSprites>,
 ) {
-    if !paused.0 {
-        return;
-    }
-
     let mut ship_ui = ship_ui.single_mut();
 
     for (interaction, mut button_color, mut button_image, mut ship_part_ui) in
